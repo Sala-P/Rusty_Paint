@@ -1,0 +1,43 @@
+<body>
+  <main class="container">
+    <h1>Mini Paint</h1>
+
+    <!--Drawing canvas -->
+    <canvas id="paint" width="800" height="600"></canvas>
+
+    <!-- Controls -->
+    <div class="controls">
+      <label>
+    Brush Color:
+    <input type="color" id="colorPicker" value="#000000" />
+  </label>
+
+  <label>
+    Brush Size:
+    <input type="range" id="brushSize" min="1" max="30" value="5" />
+  </label>
+
+  <label>
+    Shape:
+    <select id="shapeSelect">
+      <option value="brush">Brush</option>
+      <option value="line">Line</option>
+      <option value="rect">Rectangle</option>
+    </select>
+  </label>
+
+  <label>
+    File Name:
+    <input type="text" id="fileName" placeholder="myDrawing.png" />
+  </label>
+
+  <button id="clearBtn">Clear</button>
+  <button id="saveBtn">Save</button>
+  <button id="loadBtn">Load</button>
+  <button id="undoBtn">Undo</button>
+  <button id="redoBtn">Redo</button>
+    </div>
+  </main>
+
+  <script type="module" src="/src/main.ts" defer></script>
+</body>
