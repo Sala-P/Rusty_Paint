@@ -128,7 +128,7 @@ loadBtn.addEventListener("click", async () => {
   const path = `saved_images/${fileName}`;
 
   try {
-    const dataUrl = await invoke<string>("load_image", { path });
+    const bitmap = await invoke<Uint8Array>("load_image", { path });
     const img = new Image();
     img.src = dataUrl;
     img.onload = () => {
