@@ -1,32 +1,33 @@
 //use tauri::Manager;
-use std::{fs};
+use once_cell::sync::Lazy;
+use std::fs;
 use std::io::BufWriter;
 use std::path::Path;
 use std::sync::Mutex;
-use once_cell::sync::Lazy;
 
-use image::{RgbaImage, ImageFormat};
-//use image::codecs::png::PngEncoder; 
-//use image::ImageEncoder; 
+use image::{ImageFormat, RgbaImage};
+//use image::codecs::png::PngEncoder;
+//use image::ImageEncoder;
 
-//use imageproc::drawing::{draw_line_segment_mut, draw_hollow_rect_mut}; 
+//use imageproc::drawing::{draw_line_segment_mut, draw_hollow_rect_mut};
 //use imageproc::rect::Rect;
 
-static UNDO_STACK: Lazy<Mutex<Vec<RgbaImage>>> =
-    Lazy::new(|| Mutex::new(Vec::new()));
-static REDO_STACK: Lazy<Mutex<Vec<RgbaImage>>> =
-    Lazy::new(|| Mutex::new(Vec::new()));
+static UNDO_STACK: Lazy<Mutex<Vec<RgbaImage>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static REDO_STACK: Lazy<Mutex<Vec<RgbaImage>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
-const STACK_LIMIT: usize = 50; 
+const STACK_LIMIT: usize = 50;
 
 fn vec_to_rgba(vec: Vec<u8>) -> Result<RgbaImage, anyhow::Error> {
     RgbaImage::from_vec(800, 600, vec).ok_or(anyhow::Error::msg("Invalid image data"))
 }
 
 #[tauri::command]
-fn push_state(snapshot: Vec<u8>){
+fn push_state(request: tauri::ipc::Request) {
+    let tauri::ipc::InvokeBody::Raw(snapshot) = request.body() else {
+        return;
+    };
     let mut undo = UNDO_STACK.lock().unwrap();
-    let data = vec_to_rgba(snapshot).unwrap();
+    let data = vec_to_rgba(snapshot.clone()).unwrap();
     undo.push(data);
     if undo.len() > STACK_LIMIT {
         undo.remove(0); //maybe dont use a vec for this as this is expensive
@@ -75,13 +76,22 @@ fn save_image(path: String, data: Vec<u8>) {
         fs::create_dir_all(parent).unwrap();
     }
 
-    let data = RgbaImage::from_vec(800, 600, data).ok_or(anyhow::Error::msg("Invalid image data")).unwrap();
-    data.write_to(&mut BufWriter::new(fs::File::open(path).unwrap()), ImageFormat::Png).unwrap();
+    let data = RgbaImage::from_vec(800, 600, data)
+        .ok_or(anyhow::Error::msg("Invalid image data"))
+        .unwrap();
+    data.write_to(
+        &mut BufWriter::new(fs::File::open(path).unwrap()),
+        ImageFormat::Png,
+    )
+    .unwrap();
 }
 
 #[tauri::command]
-fn load_image(path: String) -> Vec<u8> {
-    image::open(path).unwrap().to_rgba8().to_vec()
+fn load_image(path: String) -> (Vec<u8>, u32, u32) {
+    let image = image::open(path).unwrap().to_rgba8();
+    let width = image.width();
+    let height = image.height();
+    (image.to_vec(), width, height)
 }
 
 #[tauri::command]
@@ -93,14 +103,14 @@ fn draw_shape(
     end_y: u32,
     color: &str,
     _line_width: u32,
-    current_png: Option<String>
+    current_png: Option<String>,
 ) -> String {
-    use image::{RgbaImage, Rgba, ExtendedColorType};
-    use imageproc::drawing::{draw_line_segment_mut, draw_hollow_rect_mut};
-    use imageproc::rect::Rect;
+    use base64::{engine::general_purpose, Engine as _};
     use image::codecs::png::PngEncoder;
     use image::ImageEncoder;
-    use base64::{engine::general_purpose, Engine as _};
+    use image::{ExtendedColorType, Rgba, RgbaImage};
+    use imageproc::drawing::{draw_hollow_rect_mut, draw_line_segment_mut};
+    use imageproc::rect::Rect;
 
     let mut img = if let Some(data_url) = current_png {
         let b64 = data_url.split_once(',').unwrap().1;
@@ -124,10 +134,10 @@ fn draw_shape(
             rgba,
         ),
         "rect" => {
-            let rect = Rect::at(start_x as i32, start_y as i32)
-                .of_size(end_x - start_x, end_y - start_y);
+            let rect =
+                Rect::at(start_x as i32, start_y as i32).of_size(end_x - start_x, end_y - start_y);
             draw_hollow_rect_mut(&mut img, rect, rgba);
-        },
+        }
         _ => {}
     }
 
@@ -141,12 +151,12 @@ fn draw_shape(
     format!("data:image/png;base64,{}", b64)
 }
 
-
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![save_image, load_image, push_state, undo, redo, draw_shape])
+        .invoke_handler(tauri::generate_handler![
+            save_image, load_image, push_state, undo, redo, draw_shape
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

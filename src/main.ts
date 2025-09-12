@@ -23,15 +23,23 @@ const shapeSelect = document.getElementById("shapeSelect") as HTMLSelectElement;
 let drawing = false;
 let startX = 0;
 let startY = 0;
-let tool = "brush"; 
+let tool = "brush";
 
+const pushState = async () => {
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const snapshot = imageData.data.buffer;
+  await __TAURI__.core.invoke('push_state', snapshot);
+};
 
 shapeSelect.addEventListener("change", () => {
   tool = shapeSelect.value; // "brush", "line", "rect"
 });
 
-
 canvas.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) {
+    return;
+  }
+
   drawing = true;
   startX = e.offsetX;
   startY = e.offsetY;
@@ -40,10 +48,10 @@ canvas.addEventListener("mousedown", (e) => {
 });
 
 canvas.addEventListener("mousemove", (e) => {
-  if (!drawing) return;
+  if (!drawing || e.button !== 0) return;
 
   if (tool === "brush") {
-    ctx.lineWidth = parseInt(brushSize.value, 10);
+    ctx.lineWidth = parseInt(brushSize.value, 10)
     ctx.lineCap = "round";
     ctx.strokeStyle = colorPicker.value;
 
@@ -56,7 +64,7 @@ canvas.addEventListener("mousemove", (e) => {
 
 // Mouseup: stop drawing and send shape to Rust if needed
 canvas.addEventListener("mouseup", async (e) => {
-  if (!drawing) return;
+  if (!drawing || e.button !== 0) return;
   drawing = false;
 
   const endX = e.offsetX;
@@ -66,8 +74,7 @@ canvas.addEventListener("mouseup", async (e) => {
 
   if (tool === "brush") {
     ctx.beginPath();
-    const snapshot = canvas.toDataURL("image/png");
-    await invoke("push_state", { snapshot });
+    await pushState();
   } else {
     const dataUrl = canvas.toDataURL("image/png");
     const newImage = await invoke<string>("draw_shape", {
@@ -85,16 +92,14 @@ canvas.addEventListener("mouseup", async (e) => {
     img.src = newImage;
     img.onload = () => ctx.drawImage(img, 0, 0);
 
-    const snapshot = canvas.toDataURL("image/png");
-    await invoke("push_state", { snapshot });
+    await pushState();
   }
 });
 
-// Clear 
+// Clear
 clearBtn.addEventListener("click", async () => {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const snapshot = canvas.toDataURL("image/png");
-  await invoke("push_state", { snapshot });
+  await pushState();
 });
 
 // Save //fix so you can save anywhere
@@ -126,19 +131,15 @@ loadBtn.addEventListener("click", async () => {
   }
 
   const path = `saved_images/${fileName}`;
-
-  try {
-    const bitmap = await invoke<Uint8Array>("load_image", { path });
-    const img = new Image();
-    img.src = dataUrl;
-    img.onload = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0);
-    };
-  } catch (err) {
-    console.error("Load failed:", err);
-    alert("Load failed, check console.");
-  }
+  const [bitmap, width, height] = await invoke<[Uint8Array, number, number]>(
+    "load_image",
+    { path },
+  );
+  const imageData = new ImageData(new Uint8ClampedArray(bitmap), width, height);
+  createImageBitmap(imageData).then((bitmap) => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0);
+  });
 });
 
 // Undo
@@ -168,6 +169,5 @@ redoBtn.addEventListener("click", async () => {
 
 // On page load, push initial empty state
 window.addEventListener("load", async () => {
-  const snapshot = canvas.toDataURL("image/png");
-  await invoke("push_state", { snapshot });
+  await pushState();
 });
