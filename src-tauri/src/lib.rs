@@ -1,105 +1,97 @@
 //use tauri::Manager;
-use std::fs;
-use std::path::Path;
-use base64::{engine::general_purpose, Engine as _};
-use std::sync::Mutex;
 use once_cell::sync::Lazy;
+use std::fs;
+use std::io::BufWriter;
+use std::path::Path;
+use std::sync::Mutex;
 
-//use image::{RgbaImage, Rgba, ExtendedColorType}; 
-//use image::codecs::png::PngEncoder; 
-//use image::ImageEncoder; 
+use image::{ImageFormat, RgbaImage};
+//use image::codecs::png::PngEncoder;
+//use image::ImageEncoder;
 
-//use imageproc::drawing::{draw_line_segment_mut, draw_hollow_rect_mut}; 
-//use imageproc::rect::Rect; 
+//use imageproc::drawing::{draw_line_segment_mut, draw_hollow_rect_mut};
+//use imageproc::rect::Rect;
 
+static UNDO_STACK: Lazy<Mutex<Vec<RgbaImage>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static REDO_STACK: Lazy<Mutex<Vec<RgbaImage>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
+const STACK_LIMIT: usize = 50;
 
-static UNDO_STACK: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
-static REDO_STACK: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
-
-const STACK_LIMIT: usize = 50; 
+fn vec_to_rgba(vec: Vec<u8>) -> Result<RgbaImage, anyhow::Error> {
+    RgbaImage::from_vec(800, 600, vec).ok_or(anyhow::Error::msg("Invalid image data"))
+}
 
 #[tauri::command]
-fn push_state(snapshot: String) {
-    match UNDO_STACK.lock() {
-        Ok(mut undo) => {
-            undo.push(snapshot);
-            if undo.len() > STACK_LIMIT {
-                undo.remove(0); //maybe dont use a vec for this as this is expensive
-            }
-        }
-        Err(poisoned) => {
-            // if the mutex was posioned jsut throw away all redos,maybe notify user
-            let mut undo = poisoned.into_inner();
-            undo.clear();
-            undo.push(snapshot); 
-        }
+fn push_state(request: tauri::ipc::Request) {
+    let tauri::ipc::InvokeBody::Raw(snapshot) = request.body() else {
+        return;
+    };
+    let mut undo = UNDO_STACK.lock().unwrap();
+    let data = vec_to_rgba(snapshot.clone()).unwrap();
+    undo.push(data);
+    if undo.len() > STACK_LIMIT {
+        undo.remove(0); //maybe dont use a vec for this as this is expensive
     }
 }
 
 #[tauri::command]
-fn undo() -> Option<String> {
+fn undo(snapshot: Vec<u8>) -> Vec<u8> {
     let mut undo = UNDO_STACK.lock().unwrap();
     let mut redo = REDO_STACK.lock().unwrap();
 
-    if undo.len() > 1 {
-        let last = undo.pop().unwrap();
-        redo.push(last);
-
+    if let Some(state) = undo.pop() {
+        redo.push(vec_to_rgba(snapshot).unwrap());
         if redo.len() > STACK_LIMIT {
             redo.remove(0);
         }
-        return undo.last().cloned();
+
+        return state.to_vec();
     }
-    None //maybe notify user
+
+    unreachable!()
 }
 
 #[tauri::command]
-fn redo() -> Option<String> {
+fn redo(snapshot: Vec<u8>) -> Vec<u8> {
     let mut undo = UNDO_STACK.lock().unwrap();
     let mut redo = REDO_STACK.lock().unwrap();
 
     if let Some(state) = redo.pop() {
-        undo.push(state.clone());
-        return Some(state);
+        undo.push(vec_to_rgba(snapshot).unwrap());
+        if undo.len() > STACK_LIMIT {
+            undo.remove(0);
+        }
+
+        return state.to_vec();
     }
-    None
+
+    unreachable!()
 }
 
 #[tauri::command]
-fn save_image(path: String, data: String) -> Result<(), String> {
+fn save_image(path: String, data: Vec<u8>) {
     let path_buf = Path::new(&path).to_path_buf();
 
     if let Some(parent) = path_buf.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {e}"))?;
+        fs::create_dir_all(parent).unwrap();
     }
 
-    let b64 = data.split_once(',').map(|(_, b)| b).unwrap_or(&data);
-    let bytes = general_purpose::STANDARD
-        .decode(b64)
-        .map_err(|e| format!("Base64 decode failed: {e}"))?;
-
-    fs::write(&path_buf, bytes).map_err(|e| format!("File write failed: {e}"))
+    let data = RgbaImage::from_vec(800, 600, data)
+        .ok_or(anyhow::Error::msg("Invalid image data"))
+        .unwrap();
+    data.write_to(
+        &mut BufWriter::new(fs::File::open(path).unwrap()),
+        ImageFormat::Png,
+    )
+    .unwrap();
 }
 
 #[tauri::command]
-fn load_image(path: String) -> Result<String, String> {
-    let bytes = fs::read(&path).map_err(|e| format!("File read failed: {e}"))?;
-
-    let mime = match Path::new(&path)
-        .extension()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_lowercase())
-        .as_deref()
-    {
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        _ => "image/png",
-    };
-
-    let b64 = general_purpose::STANDARD.encode(&bytes);
-    Ok(format!("data:{};base64,{}", mime, b64))
+fn load_image(path: String) -> (Vec<u8>, u32, u32) {
+    let image = image::open(path).unwrap().to_rgba8();
+    let width = image.width();
+    let height = image.height();
+    (image.to_vec(), width, height)
 }
 
 #[tauri::command]
@@ -111,14 +103,14 @@ fn draw_shape(
     end_y: u32,
     color: &str,
     _line_width: u32,
-    current_png: Option<String>
+    current_png: Option<String>,
 ) -> String {
-    use image::{RgbaImage, Rgba, ExtendedColorType};
-    use imageproc::drawing::{draw_line_segment_mut, draw_hollow_rect_mut};
-    use imageproc::rect::Rect;
+    use base64::{engine::general_purpose, Engine as _};
     use image::codecs::png::PngEncoder;
     use image::ImageEncoder;
-    use base64::{engine::general_purpose, Engine as _};
+    use image::{ExtendedColorType, Rgba, RgbaImage};
+    use imageproc::drawing::{draw_hollow_rect_mut, draw_line_segment_mut};
+    use imageproc::rect::Rect;
 
     let mut img = if let Some(data_url) = current_png {
         let b64 = data_url.split_once(',').unwrap().1;
@@ -142,10 +134,10 @@ fn draw_shape(
             rgba,
         ),
         "rect" => {
-            let rect = Rect::at(start_x as i32, start_y as i32)
-                .of_size(end_x - start_x, end_y - start_y);
+            let rect =
+                Rect::at(start_x as i32, start_y as i32).of_size(end_x - start_x, end_y - start_y);
             draw_hollow_rect_mut(&mut img, rect, rgba);
-        },
+        }
         _ => {}
     }
 
@@ -159,12 +151,12 @@ fn draw_shape(
     format!("data:image/png;base64,{}", b64)
 }
 
-
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![save_image, load_image, push_state, undo, redo, draw_shape])
+        .invoke_handler(tauri::generate_handler![
+            save_image, load_image, push_state, undo, redo, draw_shape
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
